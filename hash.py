@@ -121,7 +121,19 @@ def hash(bot, trigger):
         if mode and rule and hashes:
             # Handle hashcat sessions
             sessionname = session_handling(sani_nick)
-            run_cmds(bot, nick, sani_nick, sessionname, mode, rule, hashes)
+            filename = '/tmp/%s-hashes.txt' % sessionname
+
+            # Download hash file (hashes is a list]
+            if 'http://' in hashes[0]:
+                # Sanitize the URL for shell chars
+                cmd = ['/usr/bin/wget', '-O', filename, pipes.quote(hashes[0])]
+                subprocess.call(cmd)
+
+            # If no URL, proceed with textually input hashes
+            else:
+                write_hashes_to_file(bot, hashes, nick, filename)
+
+            run_cmds(bot, nick, sessionname, mode, rule)
     else:
         wrong_cmd(bot)
 
@@ -167,13 +179,11 @@ to see a list of available rulesets.')
 
     return mode, rule, hashes
 
-def run_cmds(bot, nick, sani_nick, sessionname, mode, rule, hashes):
+def run_cmds(bot, nick, sessionname, mode, rule):
     '''
     Handle interaction with crackerbox
     '''
     global sessions
-
-    write_hashes_to_file(bot, hashes, nick, sessionname)
 
     wordlists = ' '.join(glob.glob('/opt/wordlists/*'))
     cmd = '/opt/oclHashcat-1.36/oclHashcat64.bin \
@@ -208,11 +218,10 @@ def run_cmds(bot, nick, sani_nick, sessionname, mode, rule, hashes):
 
     cleanup(bot, nick, sessionname, num_cracked, output)
 
-def write_hashes_to_file(bot, hashes, nick, sessionname):
+def write_hashes_to_file(bot, hashes, nick, filename):
     '''
     Write to /tmp/sessionname-hashes.txt
     '''
-    filename = '/tmp/%s-hashes.txt' % sessionname
     with open(filename, 'a+') as f:
         for h in hashes:
             h = clean_hash(bot, h, nick)
