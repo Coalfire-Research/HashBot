@@ -26,7 +26,6 @@ all_rules = ['best64.rule',
 	     'dive.rule',
 	     'generated2.rule',
 	     'generated.rule',
-	     'hybrid',
 	     'Incisive-leetspeak.rule',
 	     'InsidePro-HashManager.rule',
 	     'InsidePro-PasswordsPro.rule',
@@ -110,6 +109,7 @@ def hash(bot, trigger):
     if not trigger.group(2):
         wrong_cmd(bot)
         return
+
     args = trigger.group(2).split()
     if len(args) > 1:
 
