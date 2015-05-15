@@ -13,38 +13,16 @@ import pipes
 import string
 import random
 import signal
+import smtplib
 import paramiko
 import subprocess
 import multiprocessing
 from willie.module import commands, example
 
 sessions = {} 
-# From /opt/oclHashcat-1.36/rules
-all_rules = ['best64.rule',
-	     'combinator.rule',
-	     'd3ad0ne.rule',
-	     'dive.rule',
-	     'generated2.rule',
-	     'generated.rule',
-	     'Incisive-leetspeak.rule',
-	     'InsidePro-HashManager.rule',
-	     'InsidePro-PasswordsPro.rule',
-	     'leetspeak.rule',
-	     'Ninja-leetspeak.rule',
-	     'oscommerce.rule',
-	     'rockyou-30000.rule',
-	     'specific.rule',
-	     'T0XlC-insert_00-99_1950-2050_toprules_0_F.rule',
-	     'T0XlC-insert_space_and_special_0_F.rule',
-	     'T0XlC-insert_top_100_passwords_1_G.rule',
-	     'T0XlC.rule',
-	     'T0XlCv1.rule',
-	     'toggles1.rule',
-	     'toggles2.rule',
-	     'toggles3.rule',
-	     'toggles4.rule',
-	     'toggles5.rule']
-
+# Get all rulefiles (and only files, no dirs) from the rules directory
+rulepath = '/opt/oclHashcat-1.36/rules/'
+all_rules = [f for f in os.listdir(rulepath) if os.path.isfile(os.path.join(rulepath, f))]
 
 @commands('help')
 def help(bot, trigger):
@@ -52,7 +30,7 @@ def help(bot, trigger):
     Print out the rules and hash types
     '''
     # Examples
-    bot.msg(trigger.nick, 'Usage: ".hash [hashmode] [ruleset] [hash] [hash] [hash] ..."')
+    bot.msg(trigger.nick, 'Usage: ".hash [hashmode] [ruleset] [hash] [hash] [hash] ... [email]"')
     bot.msg(trigger.nick, 'Type ".rules" to see a list of rules available')
     bot.msg(trigger.nick, 'Type ".sessions" to see a list of active sessions')
     bot.msg(trigger.nick, 'Type ".kill <sessionname>" to kill an active session; enter one session at a time')
@@ -65,7 +43,7 @@ def rules(bot, trigger):
     dir and list them that way at some point but for now this is
     easier and the rules don't change hardly ever
     '''
-    bot.say('Rules:')
+    bot.say('Rules: (takes a moment)')
     bot.say('%s' % ' | '.join(all_rules))
 
 @commands('kill')
@@ -117,7 +95,7 @@ def hash(bot, trigger):
         nick = str(trigger.nick)
         sani_nick = sanitize.sub('', nick)
 
-        mode, rule, hashes = get_options(bot, args, nick)
+        mode, rule, hashes, email = get_options(bot, args, nick)
         if mode and rule and hashes:
             # Handle hashcat sessions
             sessionname = session_handling(sani_nick)
@@ -133,7 +111,7 @@ def hash(bot, trigger):
             else:
                 write_hashes_to_file(bot, hashes, nick, filename)
 
-            run_cmds(bot, nick, sessionname, mode, rule)
+            run_cmds(bot, nick, sessionname, mode, rule, email)
     else:
         wrong_cmd(bot)
 
@@ -154,32 +132,41 @@ def get_options(bot, args, nick):
     '''
     Grab the args the user gives
     '''
+    email = None
+    rule = None
+    hashes = args[1:]
+    mode = args[0]
     common_hashcat_codes = {'ntlm':'1000', 'netntlmv2':'5600', 'ntlmv2':'5600', 'netntlmv1':'5500',
                             'sha1':'100', 'md5':'0', 'sha512':'1800', 'kerberos':'7500'}
-
-    hashes = args[1:]
-    # If there's a rule in the args, then hashes will be after it
-    for r in all_rules:
-        if r in args:
-            hashes = args[2:]
-            break
-
-    if len(hashes) == 0:
-        bot.say('No hashes entered. Please enter in form: .hash [hashtype] [ruleset] [hash] [hash] ...')
-        return None, None, None
-
-    mode = args[0]
     if mode in common_hashcat_codes:
         mode = common_hashcat_codes[mode]
-    rule = args[1]
-    if rule not in all_rules:
-        bot.msg(nick,'Defaulting to best64.rule as the entered ruleset does not exist. Type .rules \
-to see a list of available rulesets.')
+
+    # Pull out the rule and email from the args
+    for x in hashes:
+        # Check if a rule was used, right now only supports one rule
+        if x in all_rules:
+            rule = x
+        # Check for an email address, the only hash that may have an @ in it is Lastpass
+        # so we gotta make sure the string with @ doesn't also have a : which Lastpass does
+        if '@' in x and ':' not in x:
+            email = x
+
+    # Remove the email address and rule from the list of hashes if they exist
+    if email:
+        hashes.remove(email)
+    if rule:
+        hashes.remove(rule)
+    else:
         rule = 'best64.rule'
+        bot.msg(nick,'Defaulting to best64.rule. Type .rules to see a list of available rulesets.')
 
-    return mode, rule, hashes
+    if len(hashes) == 0:
+        bot.say('No hashes entered. Please enter in form: .hash [hashtype] [ruleset] [hash] [hash] ... [email]')
+        return None, None, None
 
-def run_cmds(bot, nick, sessionname, mode, rule):
+    return mode, rule, hashes, email
+
+def run_cmds(bot, nick, sessionname, mode, rule, email):
     '''
     Handle interaction with crackerbox
     '''
@@ -209,14 +196,14 @@ def run_cmds(bot, nick, sessionname, mode, rule):
     # Check for errors
     # If there's too many warning hashbot will hang trying to print the warnings
     # so only print the first warning/error
-    if 'WARNING:' in output:
-        warning = 'WARNING:{0}'.format(output.split('WARNING:')[1])
-        bot.say(warning.strip())
-    if 'ERROR:' in output:
-        error = 'ERROR:{0}'.format(output.split('ERROR:')[1])
-        bot.say(error.strip())
+    lines = output.splitlines()
+    for l in lines:
+        if 'WARNING:' in l:
+            bot.say(l)
+        if 'ERROR:' in l:
+            bot.say(l)
 
-    cleanup(bot, nick, sessionname, num_cracked, output)
+    cleanup(bot, nick, sessionname, num_cracked, output, email)
 
 def write_hashes_to_file(bot, hashes, nick, filename):
     '''
@@ -268,10 +255,39 @@ def find_cracked_pw(bot, nick, sessionname, hashcat_cmd):
                     if l not in cracked:
                         bot.msg(nick, 'Cracked! %s' % l)
                         cracked.append(l)
-
+                        
     return len(cracked), output
 
-def cleanup(bot, nick, sessionname, cracked, output):
+def send_email(email, sessionname, cracked, cracked_file):
+    '''
+    If user gave an email in the args, send an email when a hash is cracked
+    '''
+    # If the session is killed with ".kill" cmd, then cracked_file may not exist
+    try:
+        cracked_hashes = open(cracked_file).read()
+    except IOError:
+        cracked_hashes = "Session killed with \".kill\" command and no hashes were cracked."
+
+    from_addr = 'HashbotCF@gmail.com'
+    password = open('/home/hashbot/.willie/modules/mail-password.txt').read()
+    msg = "\r\n".join(["From: %s" % from_addr,
+                       "To: %s" % email,
+                       "Subject: Hashcat session \"%s\" completed" % sessionname,
+                       "",
+                       "Finished hashcat session \"%s\", cracked %s hash(es)\n" % (sessionname, str(cracked)),
+                       cracked_hashes])
+
+    try:
+        # The actual mail send
+        server = smtplib.SMTP('smtp.gmail.com:587')
+        server.starttls()
+        server.login(from_addr,password)
+        server.sendmail(from_addr, email, msg)
+        server.quit()
+    except Exception as e:
+        print '[-] Emailed to %s failed: %s' % (email, str(e))
+
+def cleanup(bot, nick, sessionname, cracked, output, email):
     '''
     Cleanup the left over files, save the hashes
     '''
@@ -305,9 +321,11 @@ def cleanup(bot, nick, sessionname, cracked, output):
 
     del sessions[sessionname]
     bot.reply('completed session %s and cracked %s hash(es)' % (sessionname, str(cracked)))
-    bot.msg(nick,'Hashcat finised, %d hash(es) stored on 10.0.0.240 at \
-/home/hashbot/%s-cracked-%s.txt and %s-log-%s.txt'\
-% (cracked, sessionname, identifier, sessionname, identifier))
+    bot.msg(nick,'Hashcat finished, %d hash(es) stored on 10.0.0.240 at %s and %s'\
+% (cracked, cracked_file, log_file))
+
+    # Send an email if it was given
+    send_email(email, sessionname, cracked, cracked_file)
 
 def wrong_cmd(bot):
     bot.say('Please enter hashes in the following form:')
