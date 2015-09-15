@@ -193,11 +193,11 @@ def create_cmd(bot, nick, sessionname, mode, rule, identifier):
     '''Create hashcat cmd'''
     wordlists = ' '.join(glob.glob('/opt/wordlists/*'))
     cmd = '/opt/oclHashcat-1.36/oclHashcat64.bin \
---session %s -m %s -o /home/hashbot/%s-hashcat-%s.txt /tmp/%s-hashes.txt %s \
+--session %s -m %s -o /home/hashbot/%s-cracked-%s.txt /tmp/%s-hashes.txt %s \
 -r /opt/oclHashcat-1.36/rules/%s'\
 % (sessionname, mode, sessionname, identifier, sessionname, wordlists, rule)
     print_cmd = '/opt/oclHashcat-1.36/oclHashcat64.bin \
---session %s -m %s -o /home/hashbot/%s-hashcat-%s.txt /tmp/%s-hashes.txt /opt/wordlists/* \
+--session %s -m %s -o /home/hashbot/%s-cracked-%s.txt /tmp/%s-hashes.txt /opt/wordlists/* \
 -r /opt/oclHashcat-1.36/rules/%s'\
 % (sessionname, mode, sessionname, identifier, sessionname, rule)
 
@@ -239,35 +239,26 @@ def find_cracked_pw(bot, nick, sessionname, mode, identifier, split_cmd):
     cracked = []
 
     output_file = '%s-output-%s.txt' % (sessionname, identifier)
-    err = None
 
     with open(output_file, 'w') as f:
         # Run hashcat
         hashcat_cmd = subprocess.Popen(split_cmd, stdout=f, stderr=f, preexec_fn=os.setsid)
         sessions[sessionname] = hashcat_cmd
 
-        c = 1
         while hashcat_cmd.poll() is None:
-            print c
-            if c < 10:
-                if os.path.isfile(output_file):
-                    with open(output_file, 'r') as reader:
-                        output = reader.read()
-                        print output
-                        err = print_errors(bot, output)
-                        # Prevent checking for errors at this point
-                        if err:
-                            c = 9
-            cracked = read_cracked_pws(mode, bot, cracked, sessionname, nick, '%s.pot' % sessionname)
-            c += 1
-            time.sleep(.5)
+            cracked += read_cracked_pws(mode, bot, cracked, sessionname, nick, '%s.pot' % sessionname)
+            print cracked
+            time.sleep(1)
 
-    if not err:
+    # If it ends in error
+    with open(output_file, 'r') as out:
+        output = out.read()
         err = print_errors(bot, output)
 
     # Check one more time for cracked pws
-    cracked = read_cracked_pws(mode, bot, cracked, sessionname, nick, '%s.pot' % sessionname)
+    cracked += read_cracked_pws(mode, bot, cracked, sessionname, nick, '%s.pot' % sessionname)
 
+    print cracked   
     return cracked
 
 def print_errors(bot, output):
@@ -280,7 +271,7 @@ def print_errors(bot, output):
 
 def read_cracked_pws(mode, bot, cracked, sessionname, nick, pw_file):
     '''Read from hashcats cracked file'''
-    cracked = []
+    new_cracked = []
 
     if os.path.isfile(pw_file):
         with open(pw_file) as f:
@@ -295,9 +286,9 @@ def read_cracked_pws(mode, bot, cracked, sessionname, nick, pw_file):
                         continue
                 if l not in cracked:
                     bot.msg(nick, 'Cracked! %s' % l)
-                    cracked.append(l)
+                    new_cracked.append(l)
 
-    return cracked
+    return new_cracked
 
 def send_email(email, sessionname, cracked, cracked_file):
     '''
@@ -343,7 +334,7 @@ def cleanup(bot, nick, sessionname, cracked, email, identifier):
     if os.path.isfile(cracked_pws):
         subprocess.call(['mv', cracked_pws, cracked_file])
     if os.path.isfile(log_file):
-        subprocess.call(['mv', log_file, log_file])
+        subprocess.call(['mv', '%s.log' % sessionname, log_file])
    
     # Cleanup files
     subprocess.call(['rm', '-rf', '/home/hashbot/%s.pot' % sessionname, 
