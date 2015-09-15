@@ -5,6 +5,7 @@ Love, DanMcInerney
 # Willie installation
 # https://flexion.org/posts/2014-08-installing-willie-irc-bot-on-debian.html
 
+import io
 import os
 import re
 import time
@@ -166,44 +167,44 @@ def get_options(bot, args, nick):
 
     return mode, rule, hashes, email
 
+def create_identifier():
+    identifier = ''
+    for x in xrange(0,6):
+        identifier += random.choice(string.letters)
+    return identifier
+
 def run_cmds(bot, nick, sessionname, mode, rule, email):
     '''
     Handle interaction with crackerbox
     '''
     global sessions
+    identifier = create_identifier()
 
+    #Create hashcat cmd
+    cmd = create_cmd(bot, nick, sessionname, mode, rule, identifier)
+    split_cmd = cmd.split()
+
+    # Continuously poll cracked pw file while waiting for hashcat to finish
+    cracked = find_cracked_pw(bot, nick, sessionname, mode, identifier, split_cmd)
+
+    cleanup(bot, nick, sessionname, len(cracked), email, identifier)
+
+def create_cmd(bot, nick, sessionname, mode, rule, identifier):
+    '''Create hashcat cmd'''
     wordlists = ' '.join(glob.glob('/opt/wordlists/*'))
     cmd = '/opt/oclHashcat-1.36/oclHashcat64.bin \
---session %s -m %s -o /home/hashbot/%s-output.txt /tmp/%s-hashes.txt %s \
+--session %s -m %s -o /home/hashbot/%s-hashcat-%s.txt /tmp/%s-hashes.txt %s \
 -r /opt/oclHashcat-1.36/rules/%s'\
-% (sessionname, mode, sessionname, sessionname, wordlists, rule)
+% (sessionname, mode, sessionname, identifier, sessionname, wordlists, rule)
     print_cmd = '/opt/oclHashcat-1.36/oclHashcat64.bin \
---session %s -m %s -o /home/hashbot/%s-output.txt /tmp/%s-hashes.txt /opt/wordlists/* \
+--session %s -m %s -o /home/hashbot/%s-hashcat-%s.txt /tmp/%s-hashes.txt /opt/wordlists/* \
 -r /opt/oclHashcat-1.36/rules/%s'\
-% (sessionname, mode, sessionname, sessionname, rule)
+% (sessionname, mode, sessionname, identifier, sessionname, rule)
 
-    split_cmd = cmd.split()
     bot.say('Hashcat session name: %s' % sessionname)
     bot.msg(nick, 'Cmd: %s' % print_cmd)
 
-    # Run hashcat
-    hashcat_cmd = subprocess.Popen(split_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, preexec_fn=os.setsid)#, close_fds=True)#, shell=True)
-    sessions[sessionname] = hashcat_cmd
-
-    # Continuously poll cracked pw file while waiting for hashcat to finish
-    num_cracked, output = find_cracked_pw(bot, nick, sessionname, hashcat_cmd)
-
-    # Check for errors
-    # If there's too many warning hashbot will hang trying to print the warnings
-    # so only print the first warning/error
-    lines = output.splitlines()
-    for l in lines:
-        if 'WARNING:' in l:
-            bot.say(l)
-        if 'ERROR:' in l:
-            bot.say(l)
-
-    cleanup(bot, nick, sessionname, num_cracked, output, email)
+    return cmd
 
 def write_hashes_to_file(bot, hashes, nick, filename):
     '''
@@ -230,33 +231,73 @@ the first and last characters')
 
     return h
 
-def find_cracked_pw(bot, nick, sessionname, hashcat_cmd):
+def find_cracked_pw(bot, nick, sessionname, mode, identifier, split_cmd):
     '''
     While the hashcat cmd is running, constantly check sessionname-output.txt
     for cracked hashes
     '''
     cracked = []
-    cracked_pws = '/home/hashbot/%s-output.txt' % sessionname
-    output = ''
 
-    # When exit_status_ready() is True, cmd has completed
-    while hashcat_cmd.poll() == None:
-        time.sleep(.5)
-	
-        # Prevent the buffer from filling and causing a hang
-        # Too much info to a PIPE without reading from it
-        # will result in a hang
-        for line in iter(hashcat_cmd.stdout.readline, b''):
-            output += line
+    output_file = '%s-output-%s.txt' % (sessionname, identifier)
+    err = None
 
-        if os.path.isfile(cracked_pws):
-            with open(cracked_pws) as f:
-                for l in f.readlines():
-                    if l not in cracked:
-                        bot.msg(nick, 'Cracked! %s' % l)
-                        cracked.append(l)
-                        
-    return len(cracked), output
+    with open(output_file, 'w') as f:
+        # Run hashcat
+        hashcat_cmd = subprocess.Popen(split_cmd, stdout=f, stderr=f, preexec_fn=os.setsid)
+        sessions[sessionname] = hashcat_cmd
+
+        c = 1
+        while hashcat_cmd.poll() is None:
+            print c
+            if c < 10:
+                if os.path.isfile(output_file):
+                    with open(output_file, 'r') as reader:
+                        output = reader.read()
+                        print output
+                        err = print_errors(bot, output)
+                        # Prevent checking for errors at this point
+                        if err:
+                            c = 9
+            cracked = read_cracked_pws(mode, bot, cracked, sessionname, nick, '%s.pot' % sessionname)
+            c += 1
+            time.sleep(.5)
+
+    if not err:
+        err = print_errors(bot, output)
+
+    # Check one more time for cracked pws
+    cracked = read_cracked_pws(mode, bot, cracked, sessionname, nick, '%s.pot' % sessionname)
+
+    return cracked
+
+def print_errors(bot, output):
+    '''Check and print errors'''
+    lines = output.splitlines()
+    for l in lines:
+        if 'WARNING:' in l or 'ERROR:' in l:
+            bot.say(l)
+            return True
+
+def read_cracked_pws(mode, bot, cracked, sessionname, nick, pw_file):
+    '''Read from hashcats cracked file'''
+    cracked = []
+
+    if os.path.isfile(pw_file):
+        with open(pw_file) as f:
+            for l in f.readlines():
+                # Prevent the cracked message from being too long for ntlmv2
+                if mode in ['5600','ntlmv2', 'netntlmv2']:
+                    l = l.split(':')
+                    try:
+                        # IRC has char limits that hashes sometimes exceed
+                        l = l[0]+':'+l[2]+':'+l[-1]
+                    except IndexError:
+                        continue
+                if l not in cracked:
+                    bot.msg(nick, 'Cracked! %s' % l)
+                    cracked.append(l)
+
+    return cracked
 
 def send_email(email, sessionname, cracked, cracked_file):
     '''
@@ -287,37 +328,29 @@ def send_email(email, sessionname, cracked, cracked_file):
     except Exception as e:
         print '[-] Emailed to %s failed: %s' % (email, str(e))
 
-def cleanup(bot, nick, sessionname, cracked, output, email):
+def cleanup(bot, nick, sessionname, cracked, email, identifier):
     '''
     Cleanup the left over files, save the hashes
     '''
     global sessions
 
-    identifier = ''
-    for x in xrange(0,6):
-        identifier += random.choice(string.letters)
-
     cracked_file = '/home/hashbot/%s-cracked-%s.txt' % (sessionname, identifier)
     cracked_pws = '/home/hashbot/%s-output.txt' % sessionname
     log_file = '/home/hashbot/%s-log-%s.txt' % (sessionname, identifier)
     #err_file = '/home/hashbot/%s-errors-%s.txt' % (sessionname, identifier)
-    output_file = '/home/hashbot/%s-output-%s.txt' % (sessionname, identifier)
-
-    if len(output) > 0:
-        with open(output_file, 'a+') as f:
-            f.write(output)
 
     # Move the cracked hashes and log files to ID'd filenames
     if os.path.isfile(cracked_pws):
-        subprocess.call(['mv', '/home/hashbot/%s-output.txt' % sessionname, cracked_file])
-    subprocess.call(['mv', '/home/hashbot/%s.log' % sessionname, log_file])
+        subprocess.call(['mv', cracked_pws, cracked_file])
+    if os.path.isfile(log_file):
+        subprocess.call(['mv', log_file, log_file])
    
     # Cleanup files
     subprocess.call(['rm', '-rf', '/home/hashbot/%s.pot' % sessionname, 
                      '/tmp/%s-hashes.txt' % sessionname, 
                      '/home/hashbot/%s.induct' % sessionname, 
                      '/home/hashbot/%s.restore' % sessionname, 
-                     '/home/hashbot/%s.outfiles' % sessionname]) 
+                     '/home/hashbot/%s.outfiles' % sessionname])
 
     del sessions[sessionname]
     bot.reply('completed session %s and cracked %s hash(es)' % (sessionname, str(cracked)))
@@ -325,7 +358,8 @@ def cleanup(bot, nick, sessionname, cracked, output, email):
 % (cracked, cracked_file, log_file))
 
     # Send an email if it was given
-    send_email(email, sessionname, cracked, cracked_file)
+    if email:
+        send_email(email, sessionname, cracked, cracked_file)
 
 def wrong_cmd(bot):
     bot.say('Please enter hashes in the following form:')
