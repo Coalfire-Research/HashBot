@@ -247,7 +247,6 @@ def find_cracked_pw(bot, nick, sessionname, mode, identifier, split_cmd):
 
         while hashcat_cmd.poll() is None:
             cracked += read_cracked_pws(mode, bot, cracked, sessionname, nick, '%s.pot' % sessionname)
-            print cracked
             time.sleep(1)
 
     # If it ends in error
