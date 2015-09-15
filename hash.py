@@ -257,7 +257,6 @@ def find_cracked_pw(bot, nick, sessionname, mode, identifier, split_cmd):
     # Check one more time for cracked pws
     cracked += read_cracked_pws(mode, bot, cracked, sessionname, nick, '%s.pot' % sessionname)
 
-    print cracked   
     return cracked
 
 def print_errors(bot, output):
