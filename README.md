@@ -3,7 +3,7 @@ HashBot
 Willie module for sending hashes to hashcat to be cracked. As soon as a hash is cracked, HashBot will PM the invoker with the cracked hash and plaintext.
 
 
-####Usage
+#### Usage
 
 .hash [hashmode] [ruleset] [hash] [hash] ... [email]
 
@@ -25,7 +25,7 @@ If you wish to receive an email once the hashcat session is done, simply add you
 .hash md5 8743b52063cd84097a65d1633f5c74f5 danhmcinerney@gmail.com
 
 
-####IRC Commands
+#### IRC Commands
 
 See all currently active sessions
 
